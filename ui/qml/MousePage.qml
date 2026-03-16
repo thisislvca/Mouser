@@ -11,6 +11,7 @@ import "Theme.js" as Theme
 
 Item {
     id: mousePage
+    readonly property var theme: Theme.palette(uiState.darkMode)
 
     // ── Profile state ─────────────────────────────────────────
     property string selectedProfile: backend.activeProfile
@@ -138,8 +139,8 @@ Item {
             id: leftPanel
             width: 220
             height: parent.height
-            color: Theme.bgCard
-            border.width: 1; border.color: Theme.border
+            color: theme.bgCard
+            border.width: 1; border.color: theme.border
 
             Column {
                 anchors.fill: parent
@@ -155,12 +156,12 @@ Item {
                             verticalCenter: parent.verticalCenter
                         }
                         text: "Profiles"
-                        font { family: Theme.fontFamily; pixelSize: 14; bold: true }
-                        color: Theme.textPrimary
+                        font { family: uiState.fontFamily; pixelSize: 14; bold: true }
+                        color: theme.textPrimary
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: Theme.border }
+                Rectangle { width: parent.width; height: 1; color: theme.border }
 
                 // Profile items
                 ListView {
@@ -192,7 +193,7 @@ Item {
                             Rectangle {
                                 width: 3; height: 28; radius: 2
                                 color: modelData.isActive
-                                       ? Theme.accent : "transparent"
+                                       ? theme.accent : "transparent"
                                 anchors.verticalCenter: parent.verticalCenter
                             }
 
@@ -228,11 +229,11 @@ Item {
                                 Text {
                                     text: modelData.label
                                     font {
-                                        family: Theme.fontFamily
+                                        family: uiState.fontFamily
                                         pixelSize: 12; bold: true
                                     }
                                     color: selectedProfile === modelData.name
-                                           ? Theme.accent : Theme.textPrimary
+                                           ? theme.accent : theme.textPrimary
                                     elide: Text.ElideRight
                                     width: leftPanel.width - 70
                                 }
@@ -240,8 +241,8 @@ Item {
                                     text: modelData.apps.length
                                           ? modelData.apps.join(", ")
                                           : "All applications"
-                                    font { family: Theme.fontFamily; pixelSize: 9 }
-                                    color: Theme.textSecondary
+                                    font { family: uiState.fontFamily; pixelSize: 9 }
+                                    color: theme.textSecondary
                                     elide: Text.ElideRight
                                     width: leftPanel.width - 70
                                 }
@@ -258,7 +259,7 @@ Item {
                     }
                 }
 
-                Rectangle { width: parent.width; height: 1; color: Theme.border }
+                Rectangle { width: parent.width; height: 1; color: theme.border }
 
                 // Add profile controls
                 Item {
@@ -281,20 +282,20 @@ Item {
                                     labels.push(apps[i].label)
                                 return labels
                             }
-                            Material.accent: Theme.accent
-                            font { family: Theme.fontFamily; pixelSize: 10 }
+                            Material.accent: theme.accent
+                            font { family: uiState.fontFamily; pixelSize: 10 }
                         }
 
                         Rectangle {
                             width: 42; height: 28; radius: 8
                             color: addBtnMa.containsMouse
-                                   ? Theme.accentHover : Theme.accent
+                                   ? theme.accentHover : theme.accent
 
                             Text {
                                 anchors.centerIn: parent
                                 text: "+"
-                                font { family: Theme.fontFamily; pixelSize: 16; bold: true }
-                                color: Theme.bgSidebar
+                                font { family: uiState.fontFamily; pixelSize: 16; bold: true }
+                                color: theme.bgSidebar
                             }
 
                             MouseArea {
@@ -351,8 +352,8 @@ Item {
 
                                     Text {
                                         text: "MX Master 3S"
-                                        font { family: Theme.fontFamily; pixelSize: 20; bold: true }
-                                        color: Theme.textPrimary
+                                        font { family: uiState.fontFamily; pixelSize: 20; bold: true }
+                                        color: theme.textPrimary
                                     }
 
                                     // Profile badge
@@ -367,16 +368,16 @@ Item {
                                             id: profBadgeText
                                             anchors.centerIn: parent
                                             text: selectedProfileLabel
-                                            font { family: Theme.fontFamily; pixelSize: 11 }
-                                            color: Theme.accent
+                                            font { family: uiState.fontFamily; pixelSize: 11 }
+                                            color: theme.accent
                                         }
                                     }
                                 }
 
                                 Text {
                                     text: "Click a dot to configure its action"
-                                    font { family: Theme.fontFamily; pixelSize: 12 }
-                                    color: Theme.textSecondary
+                                    font { family: uiState.fontFamily; pixelSize: 12 }
+                                    color: theme.textSecondary
                                 }
                             }
                         }
@@ -403,8 +404,8 @@ Item {
                                     id: delText
                                     anchors.centerIn: parent
                                     text: "Delete Profile"
-                                    font { family: Theme.fontFamily; pixelSize: 10; bold: true }
-                                    color: Theme.textPrimary
+                                    font { family: uiState.fontFamily; pixelSize: 10; bold: true }
+                                    color: theme.textPrimary
                                 }
 
                                 MouseArea {
@@ -444,12 +445,12 @@ Item {
                                     }
                                     Text {
                                         text: backend.batteryLevel + "%"
-                                        font { family: Theme.fontFamily; pixelSize: 11; bold: true }
+                                        font { family: uiState.fontFamily; pixelSize: 11; bold: true }
                                         color: {
                                             var lvl = backend.batteryLevel
                                             if (lvl < 20) return "#e05555"
                                             if (lvl <= 69) return "#e0b840"
-                                            return Theme.accent
+                                            return theme.accent
                                         }
                                     }
                                 }
@@ -472,15 +473,15 @@ Item {
                                     Rectangle {
                                         width: 7; height: 7; radius: 4
                                         color: backend.mouseConnected
-                                               ? Theme.accent : "#e05555"
+                                               ? theme.accent : "#e05555"
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     Text {
                                         text: backend.mouseConnected
                                               ? "Connected" : "Not Connected"
-                                        font { family: Theme.fontFamily; pixelSize: 11 }
+                                        font { family: uiState.fontFamily; pixelSize: 11 }
                                         color: backend.mouseConnected
-                                               ? Theme.accent : "#e05555"
+                                               ? theme.accent : "#e05555"
                                     }
                                 }
                             }
@@ -489,7 +490,7 @@ Item {
 
                     Rectangle {
                         width: parent.width - 56; height: 1
-                        color: Theme.border
+                        color: theme.border
                         anchors.horizontalCenter: parent.horizontalCenter
                     }
 
@@ -501,7 +502,7 @@ Item {
 
                         Rectangle {
                             anchors.fill: parent
-                            color: Theme.bg
+                            color: theme.bg
                         }
 
                         Image {
@@ -581,7 +582,7 @@ Item {
                     // ── Separator ─────────────────────────────
                     Rectangle {
                         width: parent.width - 56; height: 1
-                        color: Theme.border
+                        color: theme.border
                         anchors.horizontalCenter: parent.horizontalCenter
                         visible: selectedButton !== ""
                     }
@@ -614,7 +615,7 @@ Item {
 
                                 Rectangle {
                                     width: 6; height: pickerTitleCol.height
-                                    radius: 3; color: Theme.accent
+                                    radius: 3; color: theme.accent
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
 
@@ -626,15 +627,15 @@ Item {
                                         text: selectedButtonName
                                               ? selectedButtonName + " — Choose Action"
                                               : ""
-                                        font { family: Theme.fontFamily; pixelSize: 15; bold: true }
-                                        color: Theme.textPrimary
+                                        font { family: uiState.fontFamily; pixelSize: 15; bold: true }
+                                        color: theme.textPrimary
                                     }
                                     Text {
                                         text: selectedButton === "hscroll_left"
                                               ? "Configure separate actions for scroll left and right"
                                               : "Select what happens when you use this button"
-                                        font { family: Theme.fontFamily; pixelSize: 12 }
-                                        color: Theme.textSecondary
+                                        font { family: uiState.fontFamily; pixelSize: 12 }
+                                        color: theme.textSecondary
                                         visible: selectedButton !== ""
                                     }
                                 }
@@ -648,9 +649,9 @@ Item {
 
                                 Text {
                                     text: "SCROLL LEFT"
-                                    font { family: Theme.fontFamily; pixelSize: 11;
+                                    font { family: uiState.fontFamily; pixelSize: 11;
                                            capitalization: Font.AllUppercase; letterSpacing: 1 }
-                                    color: Theme.textDim
+                                    color: theme.textDim
                                 }
 
                                 Flow {
@@ -673,9 +674,9 @@ Item {
 
                                 Text {
                                     text: "SCROLL RIGHT"
-                                    font { family: Theme.fontFamily; pixelSize: 11;
+                                    font { family: uiState.fontFamily; pixelSize: 11;
                                            capitalization: Font.AllUppercase; letterSpacing: 1 }
-                                    color: Theme.textDim
+                                    color: theme.textDim
                                 }
 
                                 Flow {
@@ -711,10 +712,10 @@ Item {
 
                                         Text {
                                             text: modelData.category
-                                            font { family: Theme.fontFamily; pixelSize: 11;
+                                            font { family: uiState.fontFamily; pixelSize: 11;
                                                    capitalization: Font.AllUppercase;
                                                    letterSpacing: 1 }
-                                            color: Theme.textDim
+                                            color: theme.textDim
                                         }
 
                                         Flow {

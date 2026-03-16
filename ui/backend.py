@@ -29,17 +29,20 @@ class Backend(QObject):
     statusMessage = Signal(str)
     dpiFromDevice = Signal(int)
     mouseConnectedChanged = Signal()
+    batteryLevelChanged = Signal()
 
     # Internal cross-thread signals
     _profileSwitchRequest = Signal(str)
     _dpiReadRequest = Signal(int)
     _connectionChangeRequest = Signal(bool)
+    _batteryChangeRequest = Signal(int)
 
     def __init__(self, engine=None, parent=None):
         super().__init__(parent)
         self._engine = engine
         self._cfg = load_config()
         self._mouse_connected = False
+        self._battery_level = -1
 
         # Cross-thread signal connections
         self._profileSwitchRequest.connect(
@@ -48,12 +51,18 @@ class Backend(QObject):
             self._handleDpiRead, Qt.QueuedConnection)
         self._connectionChangeRequest.connect(
             self._handleConnectionChange, Qt.QueuedConnection)
+        self._batteryChangeRequest.connect(
+            self._handleBatteryChange, Qt.QueuedConnection)
 
         # Wire engine callbacks
         if engine:
             engine.set_profile_change_callback(self._onEngineProfileSwitch)
             engine.set_dpi_read_callback(self._onEngineDpiRead)
             engine.set_connection_change_callback(self._onEngineConnectionChange)
+            if hasattr(engine, "set_battery_callback"):
+                engine.set_battery_callback(self._onEngineBatteryRead)
+            if hasattr(engine, "set_debug_enabled"):
+                engine.set_debug_enabled(self.debugMode)
 
     # ── Properties ─────────────────────────────────────────────
 
@@ -121,6 +130,10 @@ class Backend(QObject):
     def invertHScroll(self):
         return self._cfg.get("settings", {}).get("invert_hscroll", False)
 
+    @Property(bool, notify=settingsChanged)
+    def debugMode(self):
+        return bool(self._cfg.get("settings", {}).get("debug_mode", False))
+
     @Property(str, notify=activeProfileChanged)
     def activeProfile(self):
         return self._cfg.get("active_profile", "default")
@@ -128,6 +141,10 @@ class Backend(QObject):
     @Property(bool, notify=mouseConnectedChanged)
     def mouseConnected(self):
         return self._mouse_connected
+
+    @Property(int, notify=batteryLevelChanged)
+    def batteryLevel(self):
+        return self._battery_level
 
     @Property(list, notify=profilesChanged)
     def profiles(self):
@@ -195,6 +212,15 @@ class Backend(QObject):
         save_config(self._cfg)
         if self._engine:
             self._engine.reload_mappings()
+        self.settingsChanged.emit()
+
+    @Slot(bool)
+    def setDebugMode(self, value):
+        enabled = bool(value)
+        self._cfg.setdefault("settings", {})["debug_mode"] = enabled
+        save_config(self._cfg)
+        if self._engine and hasattr(self._engine, "set_debug_enabled"):
+            self._engine.set_debug_enabled(enabled)
         self.settingsChanged.emit()
 
     @Slot(str)
@@ -265,6 +291,10 @@ class Backend(QObject):
         """Called from engine/hook thread — posts to Qt main thread."""
         self._connectionChangeRequest.emit(connected)
 
+    def _onEngineBatteryRead(self, level):
+        """Called from engine thread — posts to Qt main thread."""
+        self._batteryChangeRequest.emit(level)
+
     @Slot(str)
     def _handleProfileSwitch(self, profile_name):
         """Runs on Qt main thread."""
@@ -285,4 +315,13 @@ class Backend(QObject):
     def _handleConnectionChange(self, connected):
         """Runs on Qt main thread."""
         self._mouse_connected = connected
+        if not connected and self._battery_level != -1:
+            self._battery_level = -1
+            self.batteryLevelChanged.emit()
         self.mouseConnectedChanged.emit()
+
+    @Slot(int)
+    def _handleBatteryChange(self, level):
+        """Runs on Qt main thread."""
+        self._battery_level = level
+        self.batteryLevelChanged.emit()
