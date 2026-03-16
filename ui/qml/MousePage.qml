@@ -17,11 +17,25 @@ Item {
     // ── Profile state ─────────────────────────────────────────
     property string selectedProfile: backend.activeProfile
     property string selectedProfileLabel: ""
+    property var selectedProfileMappings: []
 
     Component.onCompleted: selectProfile(backend.activeProfile)
 
+    function refreshSelectedProfileMappings() {
+        selectedProfileMappings = backend.getProfileMappings(selectedProfile)
+    }
+
+    function mappingFor(key) {
+        for (var i = 0; i < selectedProfileMappings.length; i++) {
+            if (selectedProfileMappings[i].key === key)
+                return selectedProfileMappings[i]
+        }
+        return null
+    }
+
     function selectProfile(name) {
         selectedProfile = name
+        selectedProfileLabel = ""
         var profs = backend.profiles
         for (var i = 0; i < profs.length; i++) {
             if (profs[i].name === name) {
@@ -29,6 +43,7 @@ Item {
                 break
             }
         }
+        refreshSelectedProfileMappings()
         // Clear hotspot selection when switching profiles
         selectedButton = ""
         selectedButtonName = ""
@@ -67,14 +82,11 @@ Item {
             selectedActionId = ""
             return
         }
-        var btns = backend.getProfileMappings(selectedProfile)
-        for (var i = 0; i < btns.length; i++) {
-            if (btns[i].key === key) {
-                selectedButton = key
-                selectedButtonName = btns[i].name
-                selectedActionId = btns[i].actionId
-                return
-            }
+        var mapping = mappingFor(key)
+        if (mapping) {
+            selectedButton = key
+            selectedButtonName = mapping.name
+            selectedActionId = mapping.actionId
         }
     }
 
@@ -87,41 +99,34 @@ Item {
         }
         selectedButton = "hscroll_left"
         selectedButtonName = "Horizontal Scroll"
-        var btns = backend.getProfileMappings(selectedProfile)
-        for (var i = 0; i < btns.length; i++) {
-            if (btns[i].key === "hscroll_left") {
-                selectedActionId = btns[i].actionId
-                break
-            }
-        }
+        var mapping = mappingFor("hscroll_left")
+        selectedActionId = mapping ? mapping.actionId : "none"
     }
 
     Connections {
         id: mappingsConn
         target: backend
         function onMappingsChanged() {
+            refreshSelectedProfileMappings()
             if (selectedButton === "") return
-            var btns = backend.getProfileMappings(selectedProfile)
-            for (var i = 0; i < btns.length; i++) {
-                if (btns[i].key === selectedButton) {
-                    selectedActionId = btns[i].actionId
-                    break
-                }
+            var mapping = mappingFor(selectedButton)
+            if (mapping) {
+                selectedActionId = mapping.actionId
             }
         }
     }
 
     function actionFor(key) {
-        var btns = backend.getProfileMappings(selectedProfile)
-        for (var i = 0; i < btns.length; i++)
-            if (btns[i].key === key) return btns[i].actionLabel
+        var mapping = mappingFor(key)
+        if (mapping)
+            return mapping.actionLabel
         return "Do Nothing"
     }
 
     function actionFor_id(key) {
-        var btns = backend.getProfileMappings(selectedProfile)
-        for (var i = 0; i < btns.length; i++)
-            if (btns[i].key === key) return btns[i].actionId
+        var mapping = mappingFor(key)
+        if (mapping)
+            return mapping.actionId
         return "none"
     }
 
