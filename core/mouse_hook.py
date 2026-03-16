@@ -249,6 +249,8 @@ if sys.platform == "win32":
             self._last_rehook_time = 0
             self._device_connected = False
             self._connection_change_cb = None
+            self._startup_event = threading.Event()
+            self._startup_ok = False
             self._gesture_direction_enabled = False
             self._gesture_threshold = 50.0
             self._gesture_deadzone = 40.0
@@ -690,11 +692,15 @@ if sys.platform == "win32":
             self._hook = SetWindowsHookExW(
                 WH_MOUSE_LL, self._hook_proc, GetModuleHandleW(None), 0)
             if not self._hook:
+                self._startup_ok = False
+                self._startup_event.set()
                 print("[MouseHook] Failed to install hook!")
                 return
             print("[MouseHook] Hook installed successfully")
             self._setup_raw_input()
             self._running = True
+            self._startup_ok = True
+            self._startup_event.set()
 
             msg = wintypes.MSG()
             while self._running:
@@ -710,6 +716,7 @@ if sys.platform == "win32":
             if self._hook:
                 UnhookWindowsHookEx(self._hook)
                 self._hook = None
+            self._running = False
             print("[MouseHook] Hook removed")
 
         def _on_device_change(self):
@@ -771,19 +778,28 @@ if sys.platform == "win32":
 
         def start(self):
             if self._hook_thread and self._hook_thread.is_alive():
-                return
+                return True
+            self._startup_ok = False
+            self._startup_event.clear()
+            self._hook_thread = threading.Thread(target=self._run_hook, daemon=True)
+            self._hook_thread.start()
+            if not self._startup_event.wait(2):
+                print("[MouseHook] Hook startup timed out")
+                self.stop()
+                return False
+            if not self._startup_ok:
+                return False
             if HidGestureListener is not None:
-                self._hid_gesture = HidGestureListener(
+                listener = HidGestureListener(
                     on_down=self._on_hid_gesture_down,
                     on_up=self._on_hid_gesture_up,
                     on_move=self._on_hid_gesture_move,
                     on_connect=self._on_hid_connect,
                     on_disconnect=self._on_hid_disconnect,
                 )
-                self._hid_gesture.start()
-            self._hook_thread = threading.Thread(target=self._run_hook, daemon=True)
-            self._hook_thread.start()
-            time.sleep(0.1)
+                if listener.start():
+                    self._hid_gesture = listener
+            return True
 
         def stop(self):
             self._running = False
@@ -797,6 +813,8 @@ if sys.platform == "win32":
             self._hook = None
             self._ri_hwnd = None
             self._thread_id = None
+            self._startup_ok = False
+            self._startup_event.clear()
 
 
 # ==================================================================
@@ -1273,22 +1291,9 @@ elif sys.platform == "darwin":
         def start(self):
             if not _QUARTZ_OK:
                 print("[MouseHook] Quartz not available — hook not installed")
-                return
-            self._running = True
-
-            if HidGestureListener is not None:
-                self._hid_gesture = HidGestureListener(
-                    on_down=self._on_hid_gesture_down,
-                    on_up=self._on_hid_gesture_up,
-                    on_move=self._on_hid_gesture_move,
-                    on_connect=self._on_hid_connect,
-                    on_disconnect=self._on_hid_disconnect,
-                )
-                self._hid_gesture.start()
-
-            self._dispatch_thread = threading.Thread(
-                target=self._dispatch_worker, daemon=True, name="MouseHook-dispatch")
-            self._dispatch_thread.start()
+                return False
+            if self._running:
+                return True
 
             event_mask = (
                 Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved) |
@@ -1311,7 +1316,7 @@ elif sys.platform == "darwin":
                 print("[MouseHook] ERROR: Failed to create CGEventTap!")
                 print("[MouseHook] Grant Accessibility permission in:")
                 print("[MouseHook]   System Settings -> Privacy & Security -> Accessibility")
-                return
+                return False
 
             print("[MouseHook] CGEventTap created successfully", flush=True)
 
@@ -1323,6 +1328,23 @@ elif sys.platform == "darwin":
             )
             Quartz.CGEventTapEnable(self._tap, True)
             print("[MouseHook] CGEventTap enabled and integrated with run loop", flush=True)
+            self._running = True
+
+            self._dispatch_thread = threading.Thread(
+                target=self._dispatch_worker, daemon=True, name="MouseHook-dispatch")
+            self._dispatch_thread.start()
+
+            if HidGestureListener is not None:
+                listener = HidGestureListener(
+                    on_down=self._on_hid_gesture_down,
+                    on_up=self._on_hid_gesture_up,
+                    on_move=self._on_hid_gesture_move,
+                    on_connect=self._on_hid_connect,
+                    on_disconnect=self._on_hid_disconnect,
+                )
+                if listener.start():
+                    self._hid_gesture = listener
+            return True
 
         def stop(self):
             self._running = False
