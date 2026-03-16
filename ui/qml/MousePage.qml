@@ -12,11 +12,11 @@ import "Theme.js" as Theme
 Item {
     id: mousePage
     readonly property var theme: Theme.palette(uiState.darkMode)
+    property string pendingDeleteProfile: ""
 
     // ── Profile state ─────────────────────────────────────────
     property string selectedProfile: backend.activeProfile
     property string selectedProfileLabel: ""
-    property var    selectedProfileApps: []
 
     Component.onCompleted: selectProfile(backend.activeProfile)
 
@@ -26,7 +26,6 @@ Item {
         for (var i = 0; i < profs.length; i++) {
             if (profs[i].name === name) {
                 selectedProfileLabel = profs[i].label
-                selectedProfileApps  = profs[i].apps
                 break
             }
         }
@@ -44,7 +43,6 @@ Item {
             for (var i = 0; i < profs.length; i++) {
                 if (profs[i].name === selectedProfile) {
                     selectedProfileLabel = profs[i].label
-                    selectedProfileApps  = profs[i].apps
                     return
                 }
             }
@@ -310,7 +308,9 @@ Item {
                         }
 
                         Rectangle {
-                            width: 42; height: 28; radius: 8
+                            Layout.preferredWidth: 42
+                            Layout.preferredHeight: 28
+                            radius: 8
                             color: addBtnMa.containsMouse
                                    ? theme.accentHover : theme.accent
 
@@ -417,18 +417,31 @@ Item {
                             Rectangle {
                                 visible: selectedProfile !== ""
                                          && selectedProfile !== "default"
-                                width: delText.implicitWidth + 20
-                                height: 24; radius: 8
-                                color: delMa.containsMouse ? "#aa3333" : "#662222"
+                                width: delRow.implicitWidth + 18
+                                height: 28
+                                radius: 10
+                                color: delMa.containsMouse ? theme.danger : theme.dangerBg
                                 Behavior on color { ColorAnimation { duration: 120 } }
                                 anchors.verticalCenter: parent.verticalCenter
 
-                                Text {
-                                    id: delText
+                                Row {
+                                    id: delRow
                                     anchors.centerIn: parent
-                                    text: "Delete Profile"
-                                    font { family: uiState.fontFamily; pixelSize: 10; bold: true }
-                                    color: theme.textPrimary
+                                    spacing: 6
+
+                                    AppIcon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 14
+                                        height: 14
+                                        name: "trash"
+                                        iconColor: uiState.darkMode ? theme.textPrimary : theme.danger
+                                    }
+
+                                    Text {
+                                        text: "Delete Profile"
+                                        font { family: uiState.fontFamily; pixelSize: 10; bold: true }
+                                        color: uiState.darkMode ? theme.textPrimary : theme.danger
+                                    }
                                 }
 
                                 MouseArea {
@@ -437,8 +450,8 @@ Item {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        backend.deleteProfile(selectedProfile)
-                                        selectProfile(backend.activeProfile)
+                                        pendingDeleteProfile = selectedProfile
+                                        deleteDialog.open()
                                     }
                                 }
                             }
@@ -451,28 +464,36 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 color: {
                                     var lvl = backend.batteryLevel
-                                    if (lvl < 20) return Qt.rgba(0.88, 0.2, 0.2, 0.18)
-                                    if (lvl <= 69) return Qt.rgba(0.9, 0.75, 0.1, 0.18)
-                                    return Qt.rgba(0, 0.83, 0.67, 0.12)
+                                    if (lvl <= 20) return Qt.rgba(0.88, 0.2, 0.2, 0.18)
+                                    if (lvl <= 40) return Qt.rgba(0.9, 0.56, 0.1, 0.18)
+                                    return Qt.rgba(0, 0.83, 0.67, uiState.darkMode ? 0.12 : 0.16)
                                 }
 
                                 Row {
                                     id: battRow
                                     anchors.centerIn: parent
-                                    spacing: 4
+                                    spacing: 6
 
-                                    Text {
-                                        text: "🔋"
-                                        font { pixelSize: 11 }
+                                    AppIcon {
                                         anchors.verticalCenter: parent.verticalCenter
+                                        width: 14
+                                        height: 14
+                                        name: "battery-high"
+                                        iconColor: {
+                                            var lvl = backend.batteryLevel
+                                            if (lvl <= 20) return "#e05555"
+                                            if (lvl <= 40) return "#e09045"
+                                            return theme.accent
+                                        }
                                     }
+
                                     Text {
                                         text: backend.batteryLevel + "%"
                                         font { family: uiState.fontFamily; pixelSize: 11; bold: true }
                                         color: {
                                             var lvl = backend.batteryLevel
-                                            if (lvl < 20) return "#e05555"
-                                            if (lvl <= 69) return "#e0b840"
+                                            if (lvl <= 20) return "#e05555"
+                                            if (lvl <= 40) return "#e09045"
                                             return theme.accent
                                         }
                                     }
@@ -999,8 +1020,8 @@ Item {
                                 }
 
                                 Rectangle {
-                                    width: clearText.implicitWidth + 20
-                                    height: 28
+                                    Layout.preferredWidth: clearText.implicitWidth + 20
+                                    Layout.preferredHeight: 28
                                     radius: 8
                                     color: clearMa.containsMouse
                                            ? Qt.rgba(1, 1, 1, 0.08)
@@ -1024,8 +1045,8 @@ Item {
                                 }
 
                                 Rectangle {
-                                    width: clearRecText.implicitWidth + 20
-                                    height: 28
+                                    Layout.preferredWidth: clearRecText.implicitWidth + 20
+                                    Layout.preferredHeight: 28
                                     radius: 8
                                     color: clearRecMa.containsMouse
                                            ? Qt.rgba(1, 1, 1, 0.08)
@@ -1196,6 +1217,56 @@ Item {
 
                     Item { width: 1; height: 24 }
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: deleteDialog
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        title: "Delete profile?"
+        width: 380
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round((parent.height - height) / 2)
+        standardButtons: Dialog.Ok | Dialog.Cancel
+
+        function confirmDelete() {
+            if (pendingDeleteProfile && pendingDeleteProfile !== "default") {
+                backend.deleteProfile(pendingDeleteProfile)
+                selectProfile(backend.activeProfile)
+            }
+            pendingDeleteProfile = ""
+        }
+
+        function cancelDelete() {
+            pendingDeleteProfile = ""
+        }
+
+        onAccepted: confirmDelete()
+        onRejected: cancelDelete()
+
+        contentItem: Column {
+            width: deleteDialog.availableWidth
+            spacing: 10
+
+            Text {
+                width: parent.width
+                text: pendingDeleteProfile
+                      ? "Delete the profile for " + selectedProfileLabel + "?"
+                      : ""
+                font { family: uiState.fontFamily; pixelSize: 13; bold: true }
+                color: theme.textPrimary
+                wrapMode: Text.WordWrap
+            }
+
+            Text {
+                width: parent.width
+                text: "This removes its custom button mappings. The default profile will remain."
+                font { family: uiState.fontFamily; pixelSize: 12 }
+                color: theme.textSecondary
+                wrapMode: Text.WordWrap
             }
         }
     }
