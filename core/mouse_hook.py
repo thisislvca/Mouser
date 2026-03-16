@@ -509,24 +509,30 @@ if sys.platform == "win32":
                 elif wParam == WM_MOUSEWHEEL:
                     if self.invert_vscroll:
                         delta = hiword(mouse_data)
-                        if delta != 0:
+                        if delta != 0 and self._ri_hwnd:
                             self._pending_vscroll += (-delta)
-                            if not self._vscroll_posted and self._ri_hwnd:
+                            if self._vscroll_posted:
+                                return 1
+                            if PostMessageW(self._ri_hwnd, WM_APP_INJECT_VSCROLL, 0, 0):
                                 self._vscroll_posted = True
-                                PostMessageW(self._ri_hwnd,
-                                             WM_APP_INJECT_VSCROLL, 0, 0)
-                            return 1
+                                return 1
+                            self._pending_vscroll -= (-delta)
+                        elif delta != 0:
+                            self._emit_debug("Invert vertical scroll skipped: raw input window unavailable")
 
                 elif wParam == WM_MOUSEHWHEEL:
                     delta = hiword(mouse_data)
                     if self.invert_hscroll:
-                        if delta != 0:
+                        if delta != 0 and self._ri_hwnd:
                             self._pending_hscroll += (-delta)
-                            if not self._hscroll_posted and self._ri_hwnd:
+                            if self._hscroll_posted:
+                                return 1
+                            if PostMessageW(self._ri_hwnd, WM_APP_INJECT_HSCROLL, 0, 0):
                                 self._hscroll_posted = True
-                                PostMessageW(self._ri_hwnd,
-                                             WM_APP_INJECT_HSCROLL, 0, 0)
-                            return 1
+                                return 1
+                            self._pending_hscroll -= (-delta)
+                        elif delta != 0:
+                            self._emit_debug("Invert horizontal scroll skipped: raw input window unavailable")
                     if delta > 0:
                         event = MouseEvent(MouseEvent.HSCROLL_LEFT, abs(delta))
                         should_block = MouseEvent.HSCROLL_LEFT in self._blocked_events
