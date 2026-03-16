@@ -1,19 +1,19 @@
 """
-hid_gesture.py — Detect MX Master 3S gesture button via Logitech HID++.
+hid_gesture.py — Detect Logitech gesture-button events via HID++.
 
-The gesture button on a Bluetooth-connected MX Master 3S (without Logi Options+)
-often produces NO standard OS-level mouse event.  This module uses the HID++
-protocol (over hidapi) to:
+The gesture button on Bluetooth-connected Logitech mice often produces no
+standard OS-level mouse event. This module uses the HID++ protocol to:
 
-  1. Open the Logitech vendor-specific HID collection (UP 0xFF43).
-  2. Discover the REPROG_CONTROLS_V4 (0x1B04) feature via IRoot.
+  1. Open a Logitech HID++ transport.
+  2. Discover REPROG_CONTROLS_V4 (0x1B04) via IRoot.
   3. Divert the gesture button (CID 0x00C3) so we receive notifications.
   4. Fire callbacks on gesture press / release.
 
-Requires:  pip install hidapi
-Falls back gracefully if the package or device are unavailable.
+On macOS, IOKit is the preferred backend and hidapi is kept as a secondary
+fallback/debug path. On other platforms this module continues to use hidapi.
 """
 
+import os
 import sys
 import threading
 import time
@@ -47,6 +47,10 @@ if sys.platform == "darwin":
         _cf.CFSetGetCount.argtypes = [c_void_p]
         _cf.CFSetGetCount.restype = c_long
         _cf.CFSetGetValues.argtypes = [c_void_p, POINTER(c_void_p)]
+        _cf.CFNumberGetValue.argtypes = [c_void_p, c_int, c_void_p]
+        _cf.CFNumberGetValue.restype = c_int
+        _cf.CFStringGetCString.argtypes = [c_void_p, c_void_p, c_long, c_int]
+        _cf.CFStringGetCString.restype = c_int
         _cf.CFRelease.argtypes = [c_void_p]
         _cf.CFRetain.argtypes = [c_void_p]
         _cf.CFRetain.restype = c_void_p
@@ -63,6 +67,8 @@ if sys.platform == "darwin":
         _iokit.IOHIDDeviceOpen.restype = c_int
         _iokit.IOHIDDeviceClose.argtypes = [c_void_p, c_int]
         _iokit.IOHIDDeviceClose.restype = c_int
+        _iokit.IOHIDDeviceGetProperty.argtypes = [c_void_p, c_void_p]
+        _iokit.IOHIDDeviceGetProperty.restype = c_void_p
         _iokit.IOHIDDeviceSetReport.argtypes = [c_void_p, c_int, c_long, POINTER(c_uint8), c_long]
         _iokit.IOHIDDeviceSetReport.restype = c_int
         _iokit.IOHIDDeviceGetReport.argtypes = [c_void_p, c_int, c_long, POINTER(c_uint8), POINTER(c_long)]
@@ -80,13 +86,16 @@ if sys.platform == "darwin":
 
 if _MAC_NATIVE_OK:
     class _MacNativeHidDevice:
-        """Minimal IOHIDDevice wrapper for Logitech BLE HID++ on macOS."""
+        """Minimal IOHIDDevice wrapper for Logitech HID++ on macOS."""
 
-        def __init__(self, product_id):
-            self._product_id = int(product_id)
-            self._manager = None
-            self._matching = None
-            self._device = None
+        def __init__(self, device_ref, product_id=0, usage_page=None,
+                     usage=None, transport="", product=""):
+            self._device = device_ref
+            self._product_id = int(product_id or 0)
+            self._usage_page = usage_page
+            self._usage = usage
+            self._transport = transport or ""
+            self._product = product or ""
 
         @staticmethod
         def _cfstring(text):
@@ -99,44 +108,129 @@ if _MAC_NATIVE_OK:
             num = c_int(int(value))
             return _cf.CFNumberCreate(None, _K_CF_NUMBER_SINT32, byref(num))
 
-        def open(self):
-            keys = [
-                self._cfstring("VendorID"),
-                self._cfstring("ProductID"),
-            ]
-            values = [
-                self._cfnumber(LOGI_VID),
-                self._cfnumber(self._product_id),
-            ]
+        @classmethod
+        def _cfdictionary(cls, **pairs):
+            keys = [cls._cfstring(key) for key in pairs]
+            values = [cls._cfnumber(value) for value in pairs.values()]
             key_array = (c_void_p * len(keys))(*keys)
             value_array = (c_void_p * len(values))(*values)
-            self._matching = _cf.CFDictionaryCreate(
+            ref = _cf.CFDictionaryCreate(
                 None, key_array, value_array, len(keys), None, None
             )
             for item in keys + values:
                 _cf.CFRelease(item)
+            return ref
 
-            self._manager = _iokit.IOHIDManagerCreate(None, 0)
-            if not self._manager:
-                raise OSError("IOHIDManagerCreate failed")
-            _iokit.IOHIDManagerSetDeviceMatching(self._manager, self._matching)
-            res = _iokit.IOHIDManagerOpen(self._manager, 0)
-            if res != 0:
-                raise OSError(f"IOHIDManagerOpen failed: 0x{res:08X}")
-
-            devices = _iokit.IOHIDManagerCopyDevices(self._manager)
-            if not devices:
-                raise OSError(f"No IOHIDDevice for PID 0x{self._product_id:04X}")
+        @classmethod
+        def _int_property(cls, device_ref, key, default=0):
+            key_ref = cls._cfstring(key)
             try:
+                value_ref = _iokit.IOHIDDeviceGetProperty(device_ref, key_ref)
+            finally:
+                _cf.CFRelease(key_ref)
+            if not value_ref:
+                return default
+            value = c_int()
+            if not _cf.CFNumberGetValue(
+                value_ref, _K_CF_NUMBER_SINT32, byref(value)
+            ):
+                return default
+            return int(value.value)
+
+        @classmethod
+        def _string_property(cls, device_ref, key, default=""):
+            key_ref = cls._cfstring(key)
+            try:
+                value_ref = _iokit.IOHIDDeviceGetProperty(device_ref, key_ref)
+            finally:
+                _cf.CFRelease(key_ref)
+            if not value_ref:
+                return default
+            buf = ctypes.create_string_buffer(256)
+            if not _cf.CFStringGetCString(
+                value_ref, buf, len(buf), _K_CF_STRING_ENCODING_UTF8
+            ):
+                return default
+            return buf.value.decode("utf-8", errors="replace")
+
+        @classmethod
+        def enumerate_candidates(cls):
+            manager = None
+            matching = None
+            devices = None
+            out = []
+            try:
+                matching = cls._cfdictionary(VendorID=LOGI_VID)
+                manager = _iokit.IOHIDManagerCreate(None, 0)
+                if not manager:
+                    raise OSError("IOHIDManagerCreate failed")
+                _iokit.IOHIDManagerSetDeviceMatching(manager, matching)
+                res = _iokit.IOHIDManagerOpen(manager, 0)
+                if res != 0:
+                    raise OSError(f"IOHIDManagerOpen failed: 0x{res:08X}")
+
+                devices = _iokit.IOHIDManagerCopyDevices(manager)
+                if not devices:
+                    return out
                 count = _cf.CFSetGetCount(devices)
                 if count <= 0:
-                    raise OSError(f"No IOHIDDevice for PID 0x{self._product_id:04X}")
+                    return out
+
                 values_buf = (c_void_p * count)()
                 _cf.CFSetGetValues(devices, values_buf)
-                self._device = _cf.CFRetain(values_buf[0])
+                for i in range(count):
+                    device_ref = values_buf[i]
+                    if not device_ref:
+                        continue
+                    retained = _cf.CFRetain(device_ref)
+                    product_id = cls._int_property(retained, "ProductID", 0)
+                    if not product_id:
+                        _cf.CFRelease(retained)
+                        continue
+                    out.append({
+                        "backend": "iokit",
+                        "product_id": product_id,
+                        "usage_page": cls._int_property(retained, "PrimaryUsagePage", None),
+                        "usage": cls._int_property(retained, "PrimaryUsage", None),
+                        "transport": cls._string_property(retained, "Transport", ""),
+                        "product": cls._string_property(retained, "Product", ""),
+                        "device_ref": retained,
+                    })
             finally:
-                _cf.CFRelease(devices)
+                if devices:
+                    _cf.CFRelease(devices)
+                if matching:
+                    _cf.CFRelease(matching)
+                if manager:
+                    _cf.CFRelease(manager)
 
+            out.sort(key=cls._sort_key)
+            return out
+
+        @staticmethod
+        def _sort_key(info):
+            usage_page = info.get("usage_page")
+            usage = info.get("usage")
+            transport = (info.get("transport") or "").lower()
+            return (
+                0 if usage_page == 0xFF43 else 1,
+                0 if isinstance(usage_page, int) and usage_page >= 0xFF00 else 1,
+                0 if "bluetooth" in transport else 1,
+                info.get("product_id", 0),
+                usage_page if isinstance(usage_page, int) else 0xFFFFFFFF,
+                usage if isinstance(usage, int) else 0xFFFFFFFF,
+            )
+
+        @staticmethod
+        def release_candidate(info):
+            device_ref = info.get("device_ref")
+            if device_ref:
+                _cf.CFRelease(device_ref)
+                info["device_ref"] = None
+
+        def open(self):
+            if not self._device:
+                raise OSError("IOHIDDevice ref missing")
             res = _iokit.IOHIDDeviceOpen(self._device, 0)
             if res != 0:
                 raise OSError(f"IOHIDDeviceOpen failed: 0x{res:08X}")
@@ -150,12 +244,6 @@ if _MAC_NATIVE_OK:
             if self._device:
                 _cf.CFRelease(self._device)
                 self._device = None
-            if self._matching:
-                _cf.CFRelease(self._matching)
-                self._matching = None
-            if self._manager:
-                _cf.CFRelease(self._manager)
-                self._manager = None
 
         def set_nonblocking(self, _enabled):
             return None
@@ -205,6 +293,11 @@ CID_GESTURE    = 0x00C3      # "Mouse Gesture Button"
 
 MY_SW          = 0x0A        # arbitrary software-id used in our requests
 
+TRANSPORT_AUTO   = "auto"
+TRANSPORT_IOKIT  = "iokit"
+TRANSPORT_HIDAPI = "hidapi"
+_TRANSPORT_CHOICES = {TRANSPORT_AUTO, TRANSPORT_IOKIT, TRANSPORT_HIDAPI}
+
 
 # ── Helpers ───────────────────────────────────────────────────────
 
@@ -236,12 +329,16 @@ class HidGestureListener:
     """Background thread: diverts the gesture button and listens via HID++."""
 
     def __init__(self, on_down=None, on_up=None, on_move=None,
-                 on_connect=None, on_disconnect=None):
+                 on_connect=None, on_disconnect=None,
+                 transport_preference=None):
         self._on_down       = on_down
         self._on_up         = on_up
         self._on_move       = on_move
         self._on_connect    = on_connect
         self._on_disconnect = on_disconnect
+        self._transport_preference = self._resolve_transport_preference(
+            transport_preference
+        )
         self._dev       = None          # hid.device()
         self._thread    = None
         self._running   = False
@@ -256,9 +353,41 @@ class HidGestureListener:
 
     # ── public API ────────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_transport_preference(value):
+        if sys.platform != "darwin":
+            return TRANSPORT_HIDAPI
+
+        default = TRANSPORT_AUTO
+        raw = value if value is not None else os.getenv("MOUSER_HID_TRANSPORT")
+        if raw is None:
+            return default
+
+        pref = str(raw).strip().lower()
+        if not pref:
+            return default
+        if pref not in _TRANSPORT_CHOICES:
+            print(f"[HidGesture] Invalid MOUSER_HID_TRANSPORT={raw!r}; using auto")
+            return default
+        return pref
+
+    def _has_transport_backend(self):
+        if sys.platform != "darwin":
+            return HIDAPI_OK
+        if self._transport_preference == TRANSPORT_IOKIT:
+            return _MAC_NATIVE_OK
+        if self._transport_preference == TRANSPORT_HIDAPI:
+            return HIDAPI_OK
+        return _MAC_NATIVE_OK or HIDAPI_OK
+
     def start(self):
-        if not HIDAPI_OK and not _MAC_NATIVE_OK:
-            print("[HidGesture] 'hidapi' not installed — pip install hidapi")
+        if not self._has_transport_backend():
+            if sys.platform == "darwin" and self._transport_preference == TRANSPORT_IOKIT:
+                print("[HidGesture] macOS IOKit transport unavailable")
+            elif sys.platform == "darwin" and self._transport_preference == TRANSPORT_AUTO:
+                print("[HidGesture] No HID backend available on macOS")
+            else:
+                print("[HidGesture] 'hidapi' not installed — pip install hidapi")
             return False
         self._running = True
         self._thread = threading.Thread(
@@ -268,31 +397,85 @@ class HidGestureListener:
 
     def stop(self):
         self._running = False
-        d = self._dev
-        if d:
-            try:
-                d.close()
-            except Exception:
-                pass
-            self._dev = None
+        self._close_active_device()
         if self._thread:
             self._thread.join(timeout=3)
 
     # ── device discovery ──────────────────────────────────────────
 
     @staticmethod
-    def _vendor_hid_infos():
-        """Return list of device-info dicts for Logitech vendor-page TLCs."""
+    def _hidapi_candidates():
+        """Return Logitech vendor-page hidapi candidates."""
         out = []
         if not HIDAPI_OK:
             return out
         try:
             for info in _hid.enumerate(LOGI_VID, 0):
-                if info.get("usage_page", 0) >= 0xFF00:
-                    out.append(info)
+                usage_page = info.get("usage_page", 0)
+                if usage_page >= 0xFF00:
+                    out.append({
+                        "backend": TRANSPORT_HIDAPI,
+                        "path": info["path"],
+                        "product_id": info.get("product_id", 0),
+                        "usage_page": usage_page,
+                        "usage": info.get("usage"),
+                        "transport": info.get("transport", ""),
+                        "product": info.get("product_string", ""),
+                    })
         except Exception as exc:
             print(f"[HidGesture] enumerate error: {exc}")
+        out.sort(key=lambda info: (
+            0 if info.get("usage_page") == 0xFF43 else 1,
+            info.get("product_id", 0),
+            info.get("usage_page", 0),
+            info.get("usage") if isinstance(info.get("usage"), int) else 0xFFFFFFFF,
+        ))
         return out
+
+    @staticmethod
+    def _native_candidates():
+        if sys.platform != "darwin" or not _MAC_NATIVE_OK:
+            return []
+        try:
+            return _MacNativeHidDevice.enumerate_candidates()
+        except Exception as exc:
+            print(f"[HidGesture] iokit enumerate error: {exc}")
+            return []
+
+    def _connect_candidates(self):
+        if sys.platform != "darwin":
+            return self._hidapi_candidates()
+
+        if self._transport_preference == TRANSPORT_IOKIT:
+            return self._native_candidates()
+        if self._transport_preference == TRANSPORT_HIDAPI:
+            return self._hidapi_candidates()
+        return self._native_candidates() + self._hidapi_candidates()
+
+    @staticmethod
+    def _release_candidates(candidates):
+        if not _MAC_NATIVE_OK:
+            return
+        for info in candidates:
+            if info.get("backend") == TRANSPORT_IOKIT:
+                _MacNativeHidDevice.release_candidate(info)
+
+    @staticmethod
+    def _candidate_label(info):
+        parts = [f"backend={info.get('backend', 'unknown')}"]
+        product_id = info.get("product_id")
+        usage_page = info.get("usage_page")
+        usage = info.get("usage")
+        transport = info.get("transport")
+        if isinstance(product_id, int):
+            parts.append(f"pid=0x{product_id:04X}")
+        if isinstance(usage_page, int):
+            parts.append(f"up=0x{usage_page:04X}")
+        if isinstance(usage, int):
+            parts.append(f"usage=0x{usage:04X}")
+        if transport:
+            parts.append(f"transport={transport}")
+        return " ".join(parts)
 
     # ── low-level HID++ I/O ───────────────────────────────────────
 
@@ -319,7 +502,7 @@ class HidGestureListener:
         d = dev.read(64, timeout_ms)
         return list(d) if d else None
 
-    def _request(self, feat, func, params, timeout_ms=2000):
+    def _request(self, feat, func, params, timeout_ms=2000, log_errors=True):
         """Send a long HID++ request, wait for matching response."""
         try:
             self._tx(LONG_ID, feat, func, params)
@@ -341,8 +524,9 @@ class HidGestureListener:
             # HID++ error (feature-index 0xFF)
             if r_feat == 0xFF:
                 code = r_params[1] if len(r_params) > 1 else 0
-                print(f"[HidGesture] HID++ error 0x{code:02X} "
-                      f"for feat=0x{feat:02X} func={func}")
+                if log_errors:
+                    print(f"[HidGesture] HID++ error 0x{code:02X} "
+                          f"for feat=0x{feat:02X} func={func}")
                 return None
 
             expected_funcs = {func, (func + 1) & 0x0F}
@@ -352,38 +536,43 @@ class HidGestureListener:
 
     # ── feature helpers ───────────────────────────────────────────
 
-    def _find_feature(self, feature_id):
+    def _find_feature(self, feature_id, log_errors=True):
         """Use IRoot (feature 0x0000) to discover a feature index."""
         hi = (feature_id >> 8) & 0xFF
         lo = feature_id & 0xFF
-        resp = self._request(0x00, 0, [hi, lo, 0x00])
+        resp = self._request(0x00, 0, [hi, lo, 0x00], log_errors=log_errors)
         if resp:
             _, _, _, _, p = resp
             if p and p[0] != 0:
                 return p[0]
         return None
 
-    def _set_cid_reporting(self, flags):
+    def _set_cid_reporting(self, flags, log_errors=True):
         if self._feat_idx is None:
             return None
         hi = (CID_GESTURE >> 8) & 0xFF
         lo = CID_GESTURE & 0xFF
-        return self._request(self._feat_idx, 3, [hi, lo, flags, 0x00, 0x00])
+        return self._request(
+            self._feat_idx, 3, [hi, lo, flags, 0x00, 0x00],
+            log_errors=log_errors
+        )
 
-    def _divert(self):
+    def _divert(self, silent=False, log_errors=True):
         """Divert gesture button CID 0x00C3 and enable raw XY when supported."""
         if self._feat_idx is None:
             return False
-        resp = self._set_cid_reporting(0x33)
+        resp = self._set_cid_reporting(0x33, log_errors=log_errors)
         if resp is not None:
             self._rawxy_enabled = True
-            print(f"[HidGesture] Divert CID 0x{CID_GESTURE:04X} with RawXY: OK")
+            if not silent:
+                print(f"[HidGesture] Divert CID 0x{CID_GESTURE:04X} with RawXY: OK")
             return True
         self._rawxy_enabled = False
-        resp = self._set_cid_reporting(0x03)
+        resp = self._set_cid_reporting(0x03, log_errors=log_errors)
         ok = resp is not None
-        print(f"[HidGesture] Divert CID 0x{CID_GESTURE:04X}: "
-              f"{'OK' if ok else 'FAILED'}")
+        if not silent:
+            print(f"[HidGesture] Divert CID 0x{CID_GESTURE:04X}: "
+                  f"{'OK' if ok else 'FAILED'}")
         return ok
 
     def _undivert(self):
@@ -537,72 +726,117 @@ class HidGestureListener:
 
     # ── connect / main loop ───────────────────────────────────────
 
-    def _try_connect(self):
-        """Open the vendor HID collection, discover features, divert."""
-        infos = self._vendor_hid_infos()
-        if sys.platform == "darwin" and _MAC_NATIVE_OK and infos:
-            # hidapi often fails to open Logitech's BLE path on macOS, but
-            # the same HID++ reports can work via native IOHIDDevice APIs.
-            native_infos = []
-            seen_pids = set()
-            for info in infos:
-                pid = info.get("product_id", 0)
-                if pid in seen_pids:
-                    continue
-                seen_pids.add(pid)
-                native_infos.append({
-                    "product_id": pid,
-                    "usage_page": info.get("usage_page", 0),
-                    "native": True,
-                })
-            infos = native_infos + infos
-        if not infos:
-            return False
+    def _reset_transport_state(self):
+        self._feat_idx = None
+        self._dpi_idx = None
+        self._dev_idx = BT_DEV_IDX
+        self._held = False
+        self._rawxy_enabled = False
 
-        for info in infos:
-            pid = info.get("product_id", 0)
-            up  = info.get("usage_page", 0)
+    def _close_active_device(self):
+        d = self._dev
+        if d:
             try:
-                if info.get("native"):
-                    d = _MacNativeHidDevice(pid)
-                    d.open()
-                else:
-                    d = _hid.device()
-                    d.open_path(info["path"])
-                    d.set_nonblocking(False)
-                self._dev = d
-                transport = "iokit" if info.get("native") else "hidapi"
-                print(f"[HidGesture] Opened PID=0x{pid:04X} via {transport}")
-            except Exception as exc:
-                print(f"[HidGesture] Can't open PID=0x{pid:04X} "
-                      f"UP=0x{up:04X}: {exc}")
-                continue
-
-            # Try Bluetooth direct (0xFF) first, then Bolt receiver slots
-            for idx in (0xFF, 1, 2, 3, 4, 5, 6):
-                self._dev_idx = idx
-                fi = self._find_feature(FEAT_REPROG_V4)
-                if fi is not None:
-                    self._feat_idx = fi
-                    print(f"[HidGesture] Found REPROG_V4 @0x{fi:02X}  "
-                          f"PID=0x{pid:04X} devIdx=0x{idx:02X}")
-                    # Also discover ADJUSTABLE_DPI
-                    dpi_fi = self._find_feature(FEAT_ADJ_DPI)
-                    if dpi_fi:
-                        self._dpi_idx = dpi_fi
-                        print(f"[HidGesture] Found ADJUSTABLE_DPI @0x{dpi_fi:02X}")
-                    if self._divert():
-                        return True
-                    break        # right device but divert failed
-
-            # Couldn't use this interface — close and try next
-            try:
-                self._dev.close()
+                d.close()
             except Exception:
                 pass
             self._dev = None
 
+    def _open_candidate(self, info):
+        backend = info.get("backend")
+        if backend == TRANSPORT_IOKIT:
+            device_ref = info.get("device_ref")
+            d = _MacNativeHidDevice(
+                device_ref,
+                product_id=info.get("product_id", 0),
+                usage_page=info.get("usage_page"),
+                usage=info.get("usage"),
+                transport=info.get("transport", ""),
+                product=info.get("product", ""),
+            )
+            info["device_ref"] = None
+            try:
+                d.open()
+            except Exception:
+                d.close()
+                raise
+            return d
+
+        d = _hid.device()
+        try:
+            d.open_path(info["path"])
+            d.set_nonblocking(False)
+        except Exception:
+            try:
+                d.close()
+            except Exception:
+                pass
+            raise
+        return d
+
+    def _try_candidate(self, info):
+        label = self._candidate_label(info)
+        print(f"[HidGesture] Try {label}")
+        self._reset_transport_state()
+
+        try:
+            self._dev = self._open_candidate(info)
+        except Exception as exc:
+            print(f"[HidGesture] Reject {label} reason=open_failed error={exc}")
+            return False
+
+        reason = "missing_reprog_v4"
+        detail = ""
+        found_feature = False
+        for idx in (0xFF, 1, 2, 3, 4, 5, 6):
+            self._dev_idx = idx
+            feat_idx = self._find_feature(FEAT_REPROG_V4, log_errors=False)
+            if feat_idx is None:
+                continue
+
+            found_feature = True
+            self._feat_idx = feat_idx
+            self._dpi_idx = self._find_feature(FEAT_ADJ_DPI, log_errors=False)
+            dpi_label = (
+                f"0x{self._dpi_idx:02X}"
+                if isinstance(self._dpi_idx, int) else "none"
+            )
+            if self._divert(silent=True, log_errors=False):
+                print(
+                    f"[HidGesture] Connected {label} "
+                    f"devIdx=0x{idx:02X} reprog=0x{feat_idx:02X} "
+                    f"dpi={dpi_label} rawxy={'yes' if self._rawxy_enabled else 'no'}"
+                )
+                return True
+
+            reason = "divert_failed"
+            detail = (
+                f" devIdx=0x{idx:02X} reprog=0x{feat_idx:02X} dpi={dpi_label}"
+            )
+            self._feat_idx = None
+            self._dpi_idx = None
+
+        if not found_feature:
+            detail = ""
+
+        print(f"[HidGesture] Reject {label} reason={reason}{detail}")
+        self._close_active_device()
+        self._reset_transport_state()
         return False
+
+    def _try_connect(self):
+        """Open a HID++ candidate, discover features, and divert the gesture CID."""
+        candidates = self._connect_candidates()
+        if not candidates:
+            return False
+
+        try:
+            for info in candidates:
+                if self._try_candidate(info):
+                    return True
+            return False
+        finally:
+            self._release_candidates(candidates)
 
     def _main_loop(self):
         """Outer loop: connect → listen → reconnect on error/disconnect."""
@@ -638,15 +872,8 @@ class HidGestureListener:
 
             # Cleanup before potential reconnect
             self._undivert()
-            try:
-                if self._dev:
-                    self._dev.close()
-            except Exception:
-                pass
-            self._dev = None
-            self._feat_idx = None
-            self._held = False
-            self._rawxy_enabled = False
+            self._close_active_device()
+            self._reset_transport_state()
             if self._connected:
                 self._connected = False
                 if self._on_disconnect:
